@@ -121,6 +121,7 @@ def get_client_config():
         map(int, server_config['ignoreids'].split(','))
     )
 
+    print("UPLOAD INFO: ", upload)
     ratio = int(upload['ratio'])
     upload_max = int(upload['maxchunkcount'])
     up_sizes = [32768, 65536, 131072, 262144, 524288, 1048576, 7340032]
@@ -206,6 +207,15 @@ def download_test(against_server, client_config):
     speed = (total_bytes*8)/(end - start)
     print("download: ", speed/1000/1000)
 
+
+def exception_callback(g):
+    """Process gevent exception"""
+    try:
+        g.get()
+    except Exception as exc:
+        print(exc)
+
+
 def upload_test(against_server, client_config):
 
     upload_url = against_server['url']
@@ -215,36 +225,49 @@ def upload_test(against_server, client_config):
     upload_sizes = client_config['sizes']['upload']
 
     def upload_one(data, size):
-        try:
-            r = requests.post(upload_url, data=data)
-        except:
-            return 0
-        else:
-            return size
-
+        r = requests.post(upload_url, data=data)
+        r.raise_for_status()
+        return size
+    
     futures = []
     datas = {}
-    print("upload sizes: ", upload_sizes)
+
+
+    # FIXME: ratio relationship with the uploadsize..
+    # upload_sizes = [32768, 65536, 131072, 262144, 524288, 1048576, 7340032][:5]
+    upload_sizes = [32768, 65536, 131072, 262144, 524288, 1048576, 7340032][4:]
+    
+    # print("upload sizes: ", upload_sizes)
 
     for size in upload_sizes:
-        datas[size] = b"a"*size
+        datas[size] = b"a"*size #
+        # datas[size] = b"a"*524288 #*size
 
-    requests_sizes = sorted(upload_sizes*upload_count)
+    requests_sizes = upload_sizes*upload_count #sorted(upload_sizes*upload_count)
+
+
+    # requests_sizes = sorted(upload_sizes*upload_count)
+
+
     print(requests_sizes)
 
     start = timeit.timeit()
     for size in requests_sizes:
         futures.append(gevent.spawn(upload_one, datas[size], size))
-    
+        # g = gevent.spawn(upload_one, datas[size], size)
+        # g.link_exception(exception_callback)
+        # futures.append(g)
 
     gevent.joinall(futures, raise_error=True, timeout=client_config['length']['upload'])
+    # gevent.wait(futures)
     end = timeit.timeit()
     total_bytes = sum([f.value for f in futures if f.successful()])
     # print("total bytes: ", total_bytes)
-    speed = (total_bytes*8)/(end - start)
+    speed = (total_bytes*8/(end - start))
     print("upload: ", speed/1000/1000)
-    print([f.successful() for f in futures])
-    print([f.exception for f in futures])
+    print([f.value for f in futures])
+    # print([f.successful() for f in futures])
+    # print([f.exception for f in futures])
 
 
 if __name__ == "__main__":
