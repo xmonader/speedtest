@@ -1,12 +1,13 @@
 import gevent
 from gevent import spawn, joinall
 from gevent.monkey import patch_all
-patch_all(socket=True, ssl=True)
+patch_all(socket=True, ssl=True, sys=True)
 import requests
 from xml.etree import ElementTree
 import math
 import timeit
-
+import pickle
+import os
 
 def distance(origin, destination):
     """Determine distance between 2 sets of [lat,lon] in km"""
@@ -25,7 +26,7 @@ def distance(origin, destination):
     d = radius * c
 
     return d
-
+    
 SERVERS_LISTS = [
     'http://www.speedtest.net/speedtest-servers-static.php',
     'http://c.speedtest.net/speedtest-servers-static.php',
@@ -202,52 +203,75 @@ def download_test(against_server, client_config):
     gevent.joinall(futures, raise_error=True, timeout=client_config['length']['download'])
     end = timeit.timeit()
     total_bytes = sum(downloaded_chunks_lens)
-    # print("total bytes: ", total_bytes)
     speed = (total_bytes*8)/(end - start)
     print("download: ", speed/1000/1000)
 
 def upload_test(against_server, client_config):
-    # print(f"executing upload test against {against_server} config {client_config}")
-    # print(f"executing download test against {against_server} config {client_config}")
-    upload_url = "http://{}".format(against_server['host'])
+
+    upload_url = against_server['url']
+    print("uploadurl: ", upload_url)
     
     upload_count = client_config['counts']['upload']
     upload_sizes = client_config['sizes']['upload']
 
-    uploads_len = []
+    def upload_one(data, size):
+        try:
+            r = requests.post(upload_url, data=data)
+        except:
+            return 0
+        else:
+            return size
 
-    def upload_one(size, data):
-        r = requests.post(upload_url, data=data, headers={'Content-Type': 'application/octet-stream'})
-        print('status code upload', r.status_code)
-        uploads_len.append(size)
-
-    start = timeit.timeit()
     futures = []
     datas = {}
+    print("upload sizes: ", upload_sizes)
+
     for size in upload_sizes:
         datas[size] = b"a"*size
-    for i in range(upload_count):
-        for size in upload_sizes:
-            futures.append(gevent.spawn(upload_one, size, datas[size]))
+
+    requests_sizes = sorted(upload_sizes*upload_count)
+    print(requests_sizes)
+
+    start = timeit.timeit()
+    for size in requests_sizes:
+        futures.append(gevent.spawn(upload_one, datas[size], size))
     
-    print("futures: ", len(futures))
+
     gevent.joinall(futures, raise_error=True, timeout=client_config['length']['upload'])
     end = timeit.timeit()
-    total_bytes = sum(uploads_len)
+    total_bytes = sum([f.value for f in futures if f.successful()])
     # print("total bytes: ", total_bytes)
-    print(uploads_len)
     speed = (total_bytes*8)/(end - start)
     print("upload: ", speed/1000/1000)
+    print([f.successful() for f in futures])
+    print([f.exception for f in futures])
 
 
 if __name__ == "__main__":
-    client_config = get_client_config()
+    cache = "/tmp/howfast.dat"
+    appsettings = {}
+    if os.path.exists(cache):
+        try:
+            appsettings = pickle.load(open(cache))
+        except:
+            pass
+    if 'client_config' in appsettings:
+        client_config = appsettings['client_config']
+    else:
+        client_config = get_client_config()
+        appsettings['client_config'] = client_config
     print(client_config)
-    xmls = get_servers_list_xmls()
+    if 'servers_xmls' in appsettings:
+        xmls = appsettings['servers_xmls']
+    else:
+        xmls = get_servers_list_xmls()
+        appsettings['servers_xmls'] = xmls
+    
+    pickle.dump(appsettings, open(cache, "wb"))
     servers = get_servers_from_xmls(xmls)
     servers = filter_servers(servers, client_config['ignore_servers'])
     closest_5servers = get_closest_nservers(servers, client_config['lat_lng'], 5)
     # check latency..
     best_server = get_best_server(closest_5servers)
-    download_test(best_server, client_config)
-    # upload_test(best_server, client_config)
+    # download_test(best_server, client_config)
+    upload_test(best_server, client_config)
